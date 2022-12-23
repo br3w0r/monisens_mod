@@ -1,60 +1,45 @@
+mod bindings_gen;
+
+use bindings_gen::{self as bg, DeviceConnectInfo};
+
 use libc::{c_char, c_void};
-use std::ffi::CString;
+use std::{borrow::BorrowMut, ffi::CString};
 
 #[no_mangle]
 pub extern "C" fn mod_version() -> u8 {
     1
 }
 
-#[repr(C)]
-#[derive(Clone)]
-pub enum ConnParamType {
-    Bool,
-    Int,
-    Float,
-    String,
-}
-
-struct LConnParamConf {
+struct ConnParamInfo {
     name: CString,
-    typ: ConnParamType,
+    typ: bg::ConnParamType,
 }
 
-#[repr(C)]
-pub struct ConnParamConf {
-    name: *const c_char,
-    typ: ConnParamType,
-}
-
-impl From<&LConnParamConf> for ConnParamConf {
-    fn from(v: &LConnParamConf) -> Self {
+impl From<&ConnParamInfo> for bg::ConnParamInfo {
+    fn from(v: &ConnParamInfo) -> Self {
         Self {
-            name: v.name.as_ptr(),
+            name: v.name.as_ptr() as _,
             typ: v.typ.clone(),
         }
     }
 }
 
-#[repr(C)]
-pub struct DeviceConf {
-    connection_params: *const ConnParamConf,
-    connection_params_len: i32,
-}
-
-impl From<&Vec<ConnParamConf>> for DeviceConf {
-    fn from(v: &Vec<ConnParamConf>) -> Self {
+impl From<&Vec<bg::ConnParamInfo>> for bg::DeviceConnectInfo {
+    fn from(v: &Vec<bg::ConnParamInfo>) -> Self {
         Self {
-            connection_params: v.as_ptr(),
+            connection_params: v.as_ptr() as _,
             connection_params_len: (v.len() as i32),
         }
     }
 }
 
 pub struct Module {
-    params: Vec<LConnParamConf>,
+    params: Vec<ConnParamInfo>,
 }
 
+#[repr(transparent)]
 pub struct Handle(*mut c_void);
+
 impl Handle {
     /// # Panics
     /// Panics if `self.0` == null.
@@ -67,7 +52,7 @@ impl Handle {
     /// `self.0` != null.
     pub unsafe fn destroy(&mut self) {
         let ptr = self.0 as *mut Module;
-        Box::from_raw(ptr);
+        let _ = Box::from_raw(ptr);
         self.0 = std::ptr::null::<c_void>() as *mut _;
     }
 
@@ -77,61 +62,56 @@ impl Handle {
     }
 }
 
-type InitFn = unsafe extern "C" fn(*mut Handle);
-type ObtainDeviceConfFn = unsafe extern "C" fn(*const Handle, *mut c_void, ObtainDeviceConfCallback);
-
-type ObtainDeviceConfCallback = unsafe extern "C" fn(*mut c_void, *const DeviceConf);
-
-type DestroyFn = unsafe extern "C" fn(*mut Handle);
-
-#[repr(C)]
-pub struct Functions {
-    init: InitFn,
-    obtain_device_conf: ObtainDeviceConfFn,
-    destroy: DestroyFn,
-}
-
 #[no_mangle]
-pub unsafe extern "C" fn functions() -> Functions {
-    Functions {
-        init,
-        obtain_device_conf,
-        destroy,
+pub unsafe extern "C" fn functions() -> bg::Functions {
+    bg::Functions {
+        init: Some(init),
+        obtain_device_info: Some(obtain_device_info),
+        destroy: Some(destroy),
+        connect_device: Some(connect_device),
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn init(sel: *mut Handle) {
+pub unsafe extern "C" fn init(sel: *mut *mut c_void) {
     let m = Module {
         params: vec![
-            LConnParamConf {
+            ConnParamInfo {
                 name: CString::new("IP").unwrap(),
-                typ: ConnParamType::String,
+                typ: bg::ConnParamType::ConnParamString,
             },
-            LConnParamConf {
+            ConnParamInfo {
                 name: CString::new("Password").unwrap(),
-                typ: ConnParamType::Int,
+                typ: bg::ConnParamType::ConnParamInt,
             },
         ],
     };
 
-    *sel = Handle::from_module(m);
+    *sel = Handle::from_module(m).0;
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn obtain_device_conf(
-    sel: *const Handle,
+pub unsafe extern "C" fn obtain_device_info(
+    sel: *mut c_void,
     obj: *mut c_void,
-    callback: ObtainDeviceConfCallback,
+    callback: bg::device_info_callback,
 ) {
-    let module = (*sel).as_module();
-    let params_vec: Vec<ConnParamConf> = module.params.iter().map(|x| x.into()).collect();
-    let params: DeviceConf = (&params_vec).into();
+    let module = Handle(sel).as_module();
+    let params_vec: Vec<bg::ConnParamInfo> = module.params.iter().map(|x| x.into()).collect();
+    let mut params: DeviceConnectInfo = (&params_vec).into();
 
-    callback(obj, &params);
+    callback.unwrap()(obj, &mut params as _);
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn destroy(sel: *mut Handle) {
-    (*sel).destroy();
+pub unsafe extern "C" fn destroy(sel: *mut c_void) {
+    Handle(sel).destroy();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn connect_device(
+    handler: *mut c_void,
+    connect_info: *mut bg::DeviceConnectConf,
+) -> u8 {
+    todo!()
 }
