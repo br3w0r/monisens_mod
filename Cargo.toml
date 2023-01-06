@@ -7,6 +7,9 @@ edition = "2021"
 
 [dependencies]
 libc = "0.2.132"
+lazy_static = "1"
+regex = "1"
+async-std = "1"
 
 [lib]
 crate-type = ["cdylib"]
