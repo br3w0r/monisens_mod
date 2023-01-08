@@ -10,14 +10,21 @@ use regex::Regex;
 use bindings_gen::{self as bg, DeviceConnectInfo};
 
 use libc::c_void;
-use std::ffi::{CStr, CString};
+use std::{
+    ffi::{CStr, CString},
+    ptr::null,
+};
 
 const CONN_PARAM_IP: &str = "IP";
 const CONN_PARAM_PORT: &str = "Port";
 const CONN_PARAM_MESSAGE: &str = "Message";
 
+const DEVICE_CONF_MSG_TIMESTAMP: &str = "UNIX Timestamp";
+const DEVICE_CONF_MSG_CPU_USG: &str = "CPU Usage";
+const DEVICE_CONF_MSG_TXT_MSG: &str = "Text Message";
+
 lazy_static! {
-    static ref RE_IP: Regex = Regex::new(r"(([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])").unwrap();
+    static ref RE_IP: Regex = Regex::new(r"^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$").unwrap();
 }
 
 #[no_mangle]
@@ -50,6 +57,7 @@ impl From<&Vec<bg::ConnParamInfo>> for bg::DeviceConnectInfo {
 
 pub struct Module {
     params: Vec<ConnParamInfo>,
+    device_conf: Option<ConnConf>,
 }
 
 #[repr(transparent)]
@@ -84,6 +92,7 @@ pub unsafe extern "C" fn functions() -> bg::Functions {
         obtain_device_info: Some(obtain_device_info),
         destroy: Some(destroy),
         connect_device: Some(connect_device),
+        obtain_device_conf_info: Some(obtain_device_conf_info),
     }
 }
 
@@ -104,6 +113,7 @@ pub unsafe extern "C" fn init(sel: *mut *mut c_void) {
                 typ: bg::ConnParamType::ConnParamString,
             },
         ],
+        device_conf: None,
     };
 
     *sel = Handle::from_module(m).0;
@@ -111,11 +121,11 @@ pub unsafe extern "C" fn init(sel: *mut *mut c_void) {
 
 #[no_mangle]
 pub unsafe extern "C" fn obtain_device_info(
-    sel: *mut c_void,
+    handler: *mut c_void,
     obj: *mut c_void,
     callback: bg::device_info_callback,
 ) {
-    let module = Handle(sel).as_module();
+    let module = Handle(handler).as_module();
     let params_vec: Vec<bg::ConnParamInfo> = module.params.iter().map(|x| x.into()).collect();
     let mut params: DeviceConnectInfo = (&params_vec).into();
 
@@ -149,14 +159,104 @@ fn connect_device_impl(
 ) -> Result<(), ConnDeviceErr> {
     let conf = ConnConf::new(confs)?;
 
-    // TODO
-    println!("{:?}", conf);
-
-    if let Err(err) = task::block_on(send_message_async(conf.ip, conf.port, conf.message)) {
+    if let Err(_) = task::block_on(send_message_async(
+        conf.ip.clone(),
+        conf.port,
+        conf.message.clone(),
+    )) {
         return Err(ConnDeviceErr::ConnDeviceErrorConn);
     }
 
+    let module = unsafe { Handle(handler).as_module() };
+
+    module.device_conf = Some(conf);
+
     Ok(())
+}
+
+extern "C" fn obtain_device_conf_info(
+    _: *mut ::std::os::raw::c_void,
+    obj: *mut ::std::os::raw::c_void,
+    callback: bg::device_conf_info_callback,
+) {
+    let mut entries = Vec::with_capacity(2);
+
+    let entry_interval_name = CString::new("Device comminucation interval").unwrap();
+    let mut entry_interval_lt = 300i32;
+    let mut entry_interval_gt = 0i32;
+    let mut entry_interval = bg::DeviceConfInfoEntryInt {
+        required: true,
+        def: null::<i32>() as _,
+        lt: &mut entry_interval_lt as _,
+        gt: &mut entry_interval_gt as _,
+        neq: null::<i32>() as _,
+    };
+    entries.push(bg::DeviceConfInfoEntry {
+        name: entry_interval_name.as_ptr() as _,
+        typ: bg::DeviceConfInfoEntryType::DeviceConfInfoEntryTypeInt,
+        data: &mut entry_interval as *mut bg::DeviceConfInfoEntryInt as *mut c_void,
+    });
+
+    let entry_msg_type_name = CString::new("Message type").unwrap();
+    let entry_msg_type_timestamp: CString = CString::new(DEVICE_CONF_MSG_TIMESTAMP).unwrap();
+    let entry_msg_type_cpu_msg = CString::new(DEVICE_CONF_MSG_CPU_USG).unwrap();
+    let entry_msg_type_txt_msg: CString = CString::new(DEVICE_CONF_MSG_TXT_MSG).unwrap();
+
+    let entry_msg_type_type_list = vec![
+        entry_msg_type_timestamp.as_ptr(),
+        entry_msg_type_cpu_msg.as_ptr(),
+        entry_msg_type_txt_msg.as_ptr(),
+    ];
+
+    let mut entry_msg_type = bg::DeviceConfInfoEntryChoiceList {
+        required: true,
+        def: null::<i32>() as _,
+        choices: entry_msg_type_type_list.as_ptr() as _,
+        chioces_len: entry_msg_type_type_list.len() as _,
+    };
+
+    let entry_msg_name = CString::new("Message text (if type text)").unwrap();
+    let entry_msg_default = CString::new("TEST").unwrap();
+    let mut entry_msg_max_len = 255i32;
+    let mut entry_msg = bg::DeviceConfInfoEntryString {
+        required: false,
+        def: entry_msg_default.as_ptr() as _,
+        min_len: null::<i32>() as _,
+        max_len: &mut entry_msg_max_len as _,
+        match_regex: null::<i8>() as _,
+    };
+
+    let entry_msg_section = vec![
+        bg::DeviceConfInfoEntry {
+            name: entry_msg_type_name.as_ptr() as _,
+            typ: bg::DeviceConfInfoEntryType::DeviceConfInfoEntryTypeChoiceList,
+            data: &mut entry_msg_type as *mut bg::DeviceConfInfoEntryChoiceList as *mut c_void,
+        },
+        bg::DeviceConfInfoEntry {
+            name: entry_msg_name.as_ptr() as _,
+            typ: bg::DeviceConfInfoEntryType::DeviceConfInfoEntryTypeString,
+            data: &mut entry_msg as *mut bg::DeviceConfInfoEntryString as *mut c_void,
+        },
+    ];
+
+    let entry_msg_section_name = CString::new("Message").unwrap();
+    let mut entry_msg_section = bg::DeviceConfInfo {
+        device_confs: entry_msg_section.as_ptr() as _,
+        device_confs_len: entry_msg_section.len() as _,
+    };
+
+    entries.push(bg::DeviceConfInfoEntry {
+        name: entry_msg_section_name.as_ptr() as _,
+        typ: bg::DeviceConfInfoEntryType::DeviceConfInfoEntryTypeSection,
+        data: &mut entry_msg_section as *mut bg::DeviceConfInfo as *mut c_void,
+    });
+
+    let mut conf_info = bg::DeviceConfInfo {
+        device_confs: entries.as_ptr() as _,
+        device_confs_len: entries.len() as _,
+    };
+
+    unsafe { callback.unwrap()(obj, &mut conf_info as _) };
 }
 
 #[derive(Default, Debug)]
@@ -214,6 +314,10 @@ impl ConnConf {
             }
         }
 
+        if !res_conf.validate() {
+            return Err(ConnDeviceErr::ConnDeviceErrorParams);
+        }
+
         Ok(res_conf)
     }
 
@@ -232,6 +336,11 @@ impl ConnConf {
 
         true
     }
+}
+
+pub struct DeviceConfInfo {
+    pub name: CString,
+    pub device_confs: Vec<bg::DeviceConfInfoEntry>,
 }
 
 mod c_parser {
