@@ -8,6 +8,8 @@ import (
 )
 
 func main() {
+	fmt.Println("Starting test server...")
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("\"%s\": %s\n", r.URL.Path, strings.Join(r.URL.Query()["msg"], ", "))
 

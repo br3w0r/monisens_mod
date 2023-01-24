@@ -1,4 +1,13 @@
 mod bindings_gen;
+mod c_parser;
+
+use bindings_gen::{self as bg, DeviceConnectInfo};
+
+use libc::c_void;
+use std::{
+    ffi::{c_char, CStr, CString},
+    ptr::null,
+};
 
 use async_std::{
     io::{self, WriteExt},
@@ -6,22 +15,19 @@ use async_std::{
 };
 use lazy_static::lazy_static;
 use regex::Regex;
-
-use bindings_gen::{self as bg, DeviceConnectInfo};
-
-use libc::c_void;
-use std::{
-    ffi::{CStr, CString},
-    ptr::null,
-};
+use urlencoding::encode;
 
 const CONN_PARAM_IP: &str = "IP";
 const CONN_PARAM_PORT: &str = "Port";
 const CONN_PARAM_MESSAGE: &str = "Message";
 
-const DEVICE_CONF_MSG_TIMESTAMP: &str = "UNIX Timestamp";
-const DEVICE_CONF_MSG_CPU_USG: &str = "CPU Usage";
-const DEVICE_CONF_MSG_TXT_MSG: &str = "Text Message";
+const DEV_CONF_ID_DEV_COMM_INTERVAL: i32 = 1;
+const DEV_CONF_ID_MSG_TYPE: i32 = 2;
+const DEV_CONF_ID_MSG_TEXT: i32 = 3;
+
+const DEV_CONF_MSG_TYPE_IDX_TIMESTAMP: i32 = 0;
+const DEV_CONF_MSG_TYPE_IDX_CPU: i32 = 1;
+const DEV_CONF_MSG_TYPE_IDX_TEXT: i32 = 2;
 
 lazy_static! {
     static ref RE_IP: Regex = Regex::new(r"^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$").unwrap();
@@ -57,7 +63,8 @@ impl From<&Vec<bg::ConnParamInfo>> for bg::DeviceConnectInfo {
 
 pub struct Module {
     params: Vec<ConnParamInfo>,
-    device_conf: Option<ConnConf>,
+    conn_conf: Option<ConnConf>,
+    device_conf: Option<DeviceConf>,
 }
 
 #[repr(transparent)]
@@ -93,6 +100,7 @@ pub unsafe extern "C" fn functions() -> bg::Functions {
         destroy: Some(destroy),
         connect_device: Some(connect_device),
         obtain_device_conf_info: Some(obtain_device_conf_info),
+        configure_device: Some(configure_device),
     }
 }
 
@@ -113,6 +121,7 @@ pub unsafe extern "C" fn init(sel: *mut *mut c_void) {
                 typ: bg::ConnParamType::ConnParamString,
             },
         ],
+        conn_conf: None,
         device_conf: None,
     };
 
@@ -137,11 +146,12 @@ pub unsafe extern "C" fn destroy(sel: *mut c_void) {
     Handle(sel).destroy();
 }
 
+const DeviceErrorNone: u8 = 0;
+
 #[repr(u8)]
-pub enum ConnDeviceErr {
-    ConnDeviceErrorNone = 0,
-    ConnDeviceErrorConn = 1,
-    ConnDeviceErrorParams = 2,
+pub enum DeviceErr {
+    DeviceErrConn = 1,
+    DeviceErrParams = 2,
 }
 
 #[no_mangle]
@@ -149,14 +159,14 @@ pub extern "C" fn connect_device(handler: *mut c_void, confs: *mut bg::DeviceCon
     if let Err(err) = connect_device_impl(handler, confs) {
         err as _
     } else {
-        ConnDeviceErr::ConnDeviceErrorNone as _
+        DeviceErrorNone
     }
 }
 
 fn connect_device_impl(
     handler: *mut c_void,
     confs: *mut bg::DeviceConnectConf,
-) -> Result<(), ConnDeviceErr> {
+) -> Result<(), DeviceErr> {
     let conf = ConnConf::new(confs)?;
 
     if let Err(_) = task::block_on(send_message_async(
@@ -164,12 +174,12 @@ fn connect_device_impl(
         conf.port,
         conf.message.clone(),
     )) {
-        return Err(ConnDeviceErr::ConnDeviceErrorConn);
+        return Err(DeviceErr::DeviceErrConn);
     }
 
     let module = unsafe { Handle(handler).as_module() };
 
-    module.device_conf = Some(conf);
+    module.conn_conf = Some(conf);
 
     Ok(())
 }
@@ -181,7 +191,8 @@ extern "C" fn obtain_device_conf_info(
 ) {
     let mut entries = Vec::with_capacity(2);
 
-    let entry_interval_name = CString::new("Device comminucation interval").unwrap();
+    // ENTRY: Device comminucation interval
+    let entry_interval_name = CString::new("Device comminucation interval (in seconds)").unwrap();
     let mut entry_interval_lt = 300i32;
     let mut entry_interval_gt = 0i32;
     let mut entry_interval = bg::DeviceConfInfoEntryInt {
@@ -192,30 +203,35 @@ extern "C" fn obtain_device_conf_info(
         neq: null::<i32>() as _,
     };
     entries.push(bg::DeviceConfInfoEntry {
+        id: DEV_CONF_ID_DEV_COMM_INTERVAL,
         name: entry_interval_name.as_ptr() as _,
         typ: bg::DeviceConfInfoEntryType::DeviceConfInfoEntryTypeInt,
         data: &mut entry_interval as *mut bg::DeviceConfInfoEntryInt as *mut c_void,
     });
 
+    // ENTRY: Message
+    // SUB ENTRY: Message > Message type
     let entry_msg_type_name = CString::new("Message type").unwrap();
-    let entry_msg_type_timestamp: CString = CString::new(DEVICE_CONF_MSG_TIMESTAMP).unwrap();
-    let entry_msg_type_cpu_msg = CString::new(DEVICE_CONF_MSG_CPU_USG).unwrap();
-    let entry_msg_type_txt_msg: CString = CString::new(DEVICE_CONF_MSG_TXT_MSG).unwrap();
+    let entry_msg_type_timestamp: CString = CString::new("UNIX Timestamp").unwrap();
+    let entry_msg_type_cpu_msg = CString::new("CPU Usage").unwrap();
+    let entry_msg_type_txt_msg: CString = CString::new("Text Message").unwrap();
 
     let entry_msg_type_type_list = vec![
-        entry_msg_type_timestamp.as_ptr(),
-        entry_msg_type_cpu_msg.as_ptr(),
-        entry_msg_type_txt_msg.as_ptr(),
+        entry_msg_type_timestamp.as_ptr(), // const DEV_CONF_MSG_TYPE_IDX_TIMESTAMP
+        entry_msg_type_cpu_msg.as_ptr(),   // const DEV_CONF_MSG_TYPE_IDX_CPU
+        entry_msg_type_txt_msg.as_ptr(),   // const DEV_CONF_MSG_TYPE_IDX_TEXT
     ];
 
+    let entry_msg_type_default = 0;
     let mut entry_msg_type = bg::DeviceConfInfoEntryChoiceList {
         required: true,
-        def: null::<i32>() as _,
+        def: &entry_msg_type_default as *const i32 as *mut i32,
         choices: entry_msg_type_type_list.as_ptr() as _,
         chioces_len: entry_msg_type_type_list.len() as _,
     };
 
-    let entry_msg_name = CString::new("Message text (if type text)").unwrap();
+    // SUB ENTRY: Message > Message text
+    let entry_msg_text_name = CString::new("Message text (if type text)").unwrap();
     let entry_msg_default = CString::new("TEST").unwrap();
     let mut entry_msg_max_len = 255i32;
     let mut entry_msg = bg::DeviceConfInfoEntryString {
@@ -228,12 +244,14 @@ extern "C" fn obtain_device_conf_info(
 
     let entry_msg_section = vec![
         bg::DeviceConfInfoEntry {
+            id: DEV_CONF_ID_MSG_TYPE,
             name: entry_msg_type_name.as_ptr() as _,
             typ: bg::DeviceConfInfoEntryType::DeviceConfInfoEntryTypeChoiceList,
             data: &mut entry_msg_type as *mut bg::DeviceConfInfoEntryChoiceList as *mut c_void,
         },
         bg::DeviceConfInfoEntry {
-            name: entry_msg_name.as_ptr() as _,
+            id: DEV_CONF_ID_MSG_TEXT,
+            name: entry_msg_text_name.as_ptr() as _,
             typ: bg::DeviceConfInfoEntryType::DeviceConfInfoEntryTypeString,
             data: &mut entry_msg as *mut bg::DeviceConfInfoEntryString as *mut c_void,
         },
@@ -246,6 +264,7 @@ extern "C" fn obtain_device_conf_info(
     };
 
     entries.push(bg::DeviceConfInfoEntry {
+        id: 0, // No need of id for entry of type 'Section'
         name: entry_msg_section_name.as_ptr() as _,
         typ: bg::DeviceConfInfoEntryType::DeviceConfInfoEntryTypeSection,
         data: &mut entry_msg_section as *mut bg::DeviceConfInfo as *mut c_void,
@@ -267,9 +286,9 @@ struct ConnConf {
 }
 
 impl ConnConf {
-    fn new(confs_raw: *mut bg::DeviceConnectConf) -> Result<Self, ConnDeviceErr> {
+    fn new(confs_raw: *mut bg::DeviceConnectConf) -> Result<Self, DeviceErr> {
         if confs_raw.is_null() {
-            return Err(ConnDeviceErr::ConnDeviceErrorParams);
+            return Err(DeviceErr::DeviceErrParams);
         }
 
         let confs = unsafe {
@@ -288,34 +307,34 @@ impl ConnConf {
                         if let Some(ip) = c_parser::as_string(conf.value) {
                             res_conf.ip = ip;
                         } else {
-                            return Err(ConnDeviceErr::ConnDeviceErrorParams);
+                            return Err(DeviceErr::DeviceErrParams);
                         }
                     }
                     CONN_PARAM_PORT => {
                         if let Some(port) = c_parser::as_from_str::<u16>(conf.value) {
                             res_conf.port = port;
                         } else {
-                            return Err(ConnDeviceErr::ConnDeviceErrorParams);
+                            return Err(DeviceErr::DeviceErrParams);
                         }
                     }
                     CONN_PARAM_MESSAGE => {
                         if let Some(msg) = c_parser::as_string(conf.value) {
                             res_conf.message = msg;
                         } else {
-                            return Err(ConnDeviceErr::ConnDeviceErrorParams);
+                            return Err(DeviceErr::DeviceErrParams);
                         }
                     }
                     _ => {
-                        return Err(ConnDeviceErr::ConnDeviceErrorParams);
+                        return Err(DeviceErr::DeviceErrParams);
                     }
                 }
             } else {
-                return Err(ConnDeviceErr::ConnDeviceErrorParams);
+                return Err(DeviceErr::DeviceErrParams);
             }
         }
 
         if !res_conf.validate() {
-            return Err(ConnDeviceErr::ConnDeviceErrorParams);
+            return Err(DeviceErr::DeviceErrParams);
         }
 
         Ok(res_conf)
@@ -338,37 +357,103 @@ impl ConnConf {
     }
 }
 
-pub struct DeviceConfInfo {
-    pub name: CString,
-    pub device_confs: Vec<bg::DeviceConfInfoEntry>,
+#[derive(Debug)]
+enum MessageType {
+    Timestamp,
+    CPU,
+    Text(String),
 }
 
-mod c_parser {
-    use std::{
-        ffi::{c_char, CStr},
-        str::FromStr,
-    };
+#[derive(Debug)]
+struct DeviceConf {
+    comm_interval: i32,
+    msg: MessageType,
+}
 
-    pub fn str_from_c_char(raw: *mut c_char) -> String {
-        let cstr = unsafe { CStr::from_ptr(raw) };
+impl DeviceConf {
+    pub fn new(raw: *mut bg::DeviceConf) -> Result<DeviceConf, DeviceErr> {
+        let raw_slice = unsafe { std::slice::from_raw_parts((*raw).confs, (*raw).confs_len as _) };
 
-        String::from_utf8_lossy(cstr.to_bytes()).to_string()
+        let mut res_conf = DeviceConf::default();
+        let mut txt = String::new();
+
+        for conf in raw_slice {
+            match conf.id {
+                DEV_CONF_ID_DEV_COMM_INTERVAL => {
+                    res_conf.comm_interval = unsafe { *(conf.data as *const i32) };
+                }
+                DEV_CONF_ID_MSG_TYPE => match unsafe { *(conf.data as *const i32) } {
+                    DEV_CONF_MSG_TYPE_IDX_TIMESTAMP => {
+                        res_conf.msg = MessageType::Timestamp;
+                    }
+                    DEV_CONF_MSG_TYPE_IDX_CPU => {
+                        res_conf.msg = MessageType::CPU;
+                    }
+                    DEV_CONF_MSG_TYPE_IDX_TEXT => {
+                        res_conf.msg = MessageType::Text(String::new());
+                    }
+                    _ => {
+                        return Err(DeviceErr::DeviceErrParams);
+                    }
+                },
+                DEV_CONF_ID_MSG_TEXT => {
+                    let text = conf.data as *const c_char;
+
+                    if !text.is_null() {
+                        txt = c_parser::str_from_c_char(text);
+                    }
+                }
+                _ => {
+                    return Err(DeviceErr::DeviceErrParams);
+                }
+            }
+        }
+
+        if let MessageType::Text(_) = res_conf.msg {
+            if txt.is_empty() {
+                return Err(DeviceErr::DeviceErrParams);
+            }
+
+            res_conf.msg = MessageType::Text(txt);
+        }
+
+        Ok(res_conf)
     }
+}
 
-    pub fn as_string(raw: *mut c_char) -> Option<String> {
-        Some(str_from_c_char(raw))
-    }
-
-    pub fn as_from_str<F: FromStr>(raw: *mut c_char) -> Option<F> {
-        let s = str_from_c_char(raw);
-
-        let res = s.parse::<F>();
-        if let Ok(val) = res {
-            Some(val)
-        } else {
-            None
+impl Default for DeviceConf {
+    fn default() -> Self {
+        Self {
+            comm_interval: Default::default(),
+            msg: MessageType::Timestamp,
         }
     }
+}
+
+extern "C" fn configure_device(
+    handler: *mut ::std::os::raw::c_void,
+    conf: *mut bg::DeviceConf,
+) -> u8 {
+    if let Err(err) = configure_device_impl(handler, conf) {
+        err as _
+    } else {
+        DeviceErrorNone
+    }
+}
+
+fn configure_device_impl(
+    handler: *mut ::std::os::raw::c_void,
+    conf: *mut bg::DeviceConf,
+) -> Result<(), DeviceErr> {
+    let device_conf = DeviceConf::new(conf)?;
+
+    let module = unsafe { Handle(handler).as_module() };
+
+    module.device_conf = Some(device_conf);
+
+    println!("{:?}", module.device_conf);
+
+    Ok(())
 }
 
 async fn send_message_async(host: String, port: u16, msg: String) -> io::Result<()> {
@@ -376,7 +461,7 @@ async fn send_message_async(host: String, port: u16, msg: String) -> io::Result<
     let mut stream = net::TcpStream::connect(addr).await?;
     let req = format!(
         "GET /?msg={} HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n",
-        msg
+        encode(&msg)
     );
     stream.write_all(req.as_bytes()).await?;
 

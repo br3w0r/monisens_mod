@@ -10,6 +10,7 @@ libc = "0.2.132"
 lazy_static = "1"
 regex = "1"
 async-std = "1"
+urlencoding = "2"
 
 [lib]
 crate-type = ["cdylib"]
