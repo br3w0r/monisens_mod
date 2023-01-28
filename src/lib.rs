@@ -101,6 +101,7 @@ pub unsafe extern "C" fn functions() -> bg::Functions {
         connect_device: Some(connect_device),
         obtain_device_conf_info: Some(obtain_device_conf_info),
         configure_device: Some(configure_device),
+        obtain_sensor_type_infos: Some(obtain_sensor_type_infos),
     }
 }
 
@@ -185,8 +186,8 @@ fn connect_device_impl(
 }
 
 extern "C" fn obtain_device_conf_info(
-    _: *mut ::std::os::raw::c_void,
-    obj: *mut ::std::os::raw::c_void,
+    _: *mut c_void,
+    obj: *mut c_void,
     callback: bg::device_conf_info_callback,
 ) {
     let mut entries = Vec::with_capacity(2);
@@ -430,10 +431,7 @@ impl Default for DeviceConf {
     }
 }
 
-extern "C" fn configure_device(
-    handler: *mut ::std::os::raw::c_void,
-    conf: *mut bg::DeviceConf,
-) -> u8 {
+extern "C" fn configure_device(handler: *mut c_void, conf: *mut bg::DeviceConf) -> u8 {
     if let Err(err) = configure_device_impl(handler, conf) {
         err as _
     } else {
@@ -441,10 +439,7 @@ extern "C" fn configure_device(
     }
 }
 
-fn configure_device_impl(
-    handler: *mut ::std::os::raw::c_void,
-    conf: *mut bg::DeviceConf,
-) -> Result<(), DeviceErr> {
+fn configure_device_impl(handler: *mut c_void, conf: *mut bg::DeviceConf) -> Result<(), DeviceErr> {
     let device_conf = DeviceConf::new(conf)?;
 
     let module = unsafe { Handle(handler).as_module() };
@@ -455,6 +450,67 @@ fn configure_device_impl(
 
     Ok(())
 }
+
+extern "C" fn obtain_sensor_type_infos(
+    handler: *mut c_void,
+    obj: *mut c_void,
+    callback: bg::sensor_type_infos_callback,
+) -> u8 {
+    // SENSOR: Test Server
+    let test_server_sensor_type_info_name = CString::new("test_server").unwrap();
+    let test_server_type_info_response_name = CString::new("response").unwrap();
+    let test_server_type_info_response = bg::SensorDataTypeInfo {
+        name: test_server_type_info_response_name.as_ptr() as _,
+        typ: bg::SensorDataType::SensorDataTypeString,
+    };
+
+    let test_server_type_info_timestamp_name = CString::new("timestamp").unwrap();
+    let test_server_type_info_timestamp = bg::SensorDataTypeInfo {
+        name: test_server_type_info_timestamp_name.as_ptr() as _,
+        typ: bg::SensorDataType::SensorDataTypeTimestamp,
+    };
+
+    let test_server_sensor_type_info_vec = vec![
+        test_server_type_info_response,
+        test_server_type_info_timestamp,
+    ];
+
+    let test_server_sensor_type_info = bg::SensorTypeInfo {
+        name: test_server_sensor_type_info_name.as_ptr() as _,
+        data_type_infos_len: test_server_sensor_type_info_vec.len() as _,
+        data_type_infos: test_server_sensor_type_info_vec.as_ptr() as _,
+    };
+
+    // SENSOR: TestSensor
+    let test_sensor_sensor_type_info_name = CString::new("test_sensor").unwrap();
+    let test_sensor_sensor_type_info_data_name = CString::new("data").unwrap();
+    let test_sensor_sensor_type_info_data = bg::SensorDataTypeInfo {
+        name: test_sensor_sensor_type_info_data_name.as_ptr() as _,
+        typ: bg::SensorDataType::SensorDataTypeInt64,
+    };
+
+    let test_sensor_sensor_type_info_vec = vec![test_sensor_sensor_type_info_data];
+
+    let test_sensor_sensor_type_info = bg::SensorTypeInfo {
+        name: test_sensor_sensor_type_info_name.as_ptr() as _,
+        data_type_infos_len: test_sensor_sensor_type_info_vec.len() as _,
+        data_type_infos: test_sensor_sensor_type_info_vec.as_ptr() as _,
+    };
+
+    // Sensor infos
+    let sensor_type_infos_vec = vec![test_server_sensor_type_info, test_sensor_sensor_type_info];
+
+    let sensor_type_infos = bg::SensorTypeInfos {
+        sensor_type_infos_len: sensor_type_infos_vec.len() as _,
+        sensor_type_infos: sensor_type_infos_vec.as_ptr() as _,
+    };
+
+    unsafe { callback.unwrap()(obj, &sensor_type_infos as *const _ as *mut _) };
+
+    DeviceErrorNone
+}
+
+// --------------------------- Module-specific functions ---------------------------
 
 async fn send_message_async(host: String, port: u16, msg: String) -> io::Result<()> {
     let addr = host + ":" + port.to_string().as_str();
