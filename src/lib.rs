@@ -4,18 +4,25 @@ mod c_parser;
 use bindings_gen::{self as bg, DeviceConnectInfo};
 
 use libc::c_void;
+use std::thread::{self, JoinHandle};
 use std::{
     ffi::{c_char, CStr, CString},
     ptr::null,
+    time::{Duration, SystemTime},
 };
 
+use async_macros::select;
 use async_std::{
+    channel::{self, Receiver, Sender},
     io::{self, WriteExt},
-    net, task,
+    net,
+    task::{self},
 };
 use lazy_static::lazy_static;
 use regex::Regex;
 use urlencoding::encode;
+use lipsum::lipsum_words_with_rng;
+use rand::thread_rng;
 
 const CONN_PARAM_IP: &str = "IP";
 const CONN_PARAM_PORT: &str = "Port";
@@ -65,6 +72,10 @@ pub struct Module {
     params: Vec<ConnParamInfo>,
     conn_conf: Option<ConnConf>,
     device_conf: Option<DeviceConf>,
+
+    // Process flow
+    thread_handle: Option<JoinHandle<()>>,
+    stop_tx: Option<Sender<()>>,
 }
 
 #[repr(transparent)]
@@ -102,6 +113,8 @@ pub unsafe extern "C" fn functions() -> bg::Functions {
         obtain_device_conf_info: Some(obtain_device_conf_info),
         configure_device: Some(configure_device),
         obtain_sensor_type_infos: Some(obtain_sensor_type_infos),
+        start: Some(start),
+        stop: Some(stop),
     }
 }
 
@@ -124,6 +137,8 @@ pub unsafe extern "C" fn init(sel: *mut *mut c_void) {
         ],
         conn_conf: None,
         device_conf: None,
+        thread_handle: None,
+        stop_tx: None,
     };
 
     *sel = Handle::from_module(m).0;
@@ -144,10 +159,11 @@ pub unsafe extern "C" fn obtain_device_info(
 
 #[no_mangle]
 pub unsafe extern "C" fn destroy(sel: *mut c_void) {
+    stop(sel);
     Handle(sel).destroy();
 }
 
-const DeviceErrorNone: u8 = 0;
+const DEVICE_ERROR_NONE: u8 = 0;
 
 #[repr(u8)]
 pub enum DeviceErr {
@@ -160,7 +176,7 @@ pub extern "C" fn connect_device(handler: *mut c_void, confs: *mut bg::DeviceCon
     if let Err(err) = connect_device_impl(handler, confs) {
         err as _
     } else {
-        DeviceErrorNone
+        DEVICE_ERROR_NONE
     }
 }
 
@@ -435,7 +451,7 @@ extern "C" fn configure_device(handler: *mut c_void, conf: *mut bg::DeviceConf) 
     if let Err(err) = configure_device_impl(handler, conf) {
         err as _
     } else {
-        DeviceErrorNone
+        DEVICE_ERROR_NONE
     }
 }
 
@@ -452,7 +468,7 @@ fn configure_device_impl(handler: *mut c_void, conf: *mut bg::DeviceConf) -> Res
 }
 
 extern "C" fn obtain_sensor_type_infos(
-    handler: *mut c_void,
+    _: *mut c_void,
     obj: *mut c_void,
     callback: bg::sensor_type_infos_callback,
 ) -> u8 {
@@ -481,15 +497,23 @@ extern "C" fn obtain_sensor_type_infos(
         data_type_infos: test_server_sensor_type_info_vec.as_ptr() as _,
     };
 
-    // SENSOR: TestSensor
+    // SENSOR: Test Sensor
     let test_sensor_sensor_type_info_name = CString::new("test_sensor").unwrap();
     let test_sensor_sensor_type_info_data_name = CString::new("data").unwrap();
     let test_sensor_sensor_type_info_data = bg::SensorDataTypeInfo {
         name: test_sensor_sensor_type_info_data_name.as_ptr() as _,
-        typ: bg::SensorDataType::SensorDataTypeInt64,
+        typ: bg::SensorDataType::SensorDataTypeString,
+    };
+    let test_sensor_sensor_type_info_timestamp_name = CString::new("timestamp").unwrap();
+    let test_sensor_sensor_type_info_timestamp = bg::SensorDataTypeInfo {
+        name: test_sensor_sensor_type_info_timestamp_name.as_ptr() as _,
+        typ: bg::SensorDataType::SensorDataTypeTimestamp,
     };
 
-    let test_sensor_sensor_type_info_vec = vec![test_sensor_sensor_type_info_data];
+    let test_sensor_sensor_type_info_vec = vec![
+        test_sensor_sensor_type_info_data,
+        test_sensor_sensor_type_info_timestamp,
+    ];
 
     let test_sensor_sensor_type_info = bg::SensorTypeInfo {
         name: test_sensor_sensor_type_info_name.as_ptr() as _,
@@ -507,7 +531,105 @@ extern "C" fn obtain_sensor_type_infos(
 
     unsafe { callback.unwrap()(obj, &sensor_type_infos as *const _ as *mut _) };
 
-    DeviceErrorNone
+    DEVICE_ERROR_NONE
+}
+
+struct MsgHandle(*mut c_void);
+
+unsafe impl Send for MsgHandle {}
+
+extern "C" fn start(
+    handler: *mut c_void,
+    msg_handler: *mut c_void,
+    handle_func: bg::handle_msg_func,
+) -> u8 {
+    let module = unsafe { Handle(handler).as_module() };
+
+    let handle = MsgHandle(msg_handler);
+    let sleep_duration =
+        Duration::from_secs(module.device_conf.as_ref().unwrap().comm_interval as _);
+    let (tx, rx) = channel::bounded(1);
+
+    let t = thread::spawn(move || {
+        // Copy msg handle
+        let handle = handle;
+        let sleep_duration = sleep_duration;
+        let stop_rx = rx;
+        loop {
+            let sensor_name = CString::new("test_sensor").unwrap();
+            let sensor_data_name = CString::new("data").unwrap();
+            let sensor_data = CString::new(lipsum_words_with_rng(thread_rng(), 4)).unwrap();
+
+            let sensor_timestamp_name = CString::new("timestamp").unwrap();
+            let sensor_timestamp = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            let data = vec![bg::SensorMsgData {
+                name: sensor_data_name.as_ptr() as _,
+                typ: bg::SensorDataType::SensorDataTypeString,
+                data: sensor_data.as_ptr() as _,
+            }, bg::SensorMsgData {
+                name: sensor_timestamp_name.as_ptr() as _,
+                typ: bg::SensorDataType::SensorDataTypeTimestamp,
+                data: &sensor_timestamp as *const i64 as *mut _,
+            }];
+
+            let msg = bg::SensorMsg {
+                name: sensor_name.as_ptr() as _,
+                data: data.as_ptr() as *mut _,
+                data_len: data.len() as _,
+            };
+
+            let msg_data = bg::Message {
+                typ: bg::MessageType::MessageTypeSensor,
+                data: &msg as *const bg::SensorMsg as *mut _,
+            };
+
+            unsafe { handle_func.unwrap()(handle.0, msg_data) };
+
+            if !task::block_on(timer_with_cancel(sleep_duration, &stop_rx)) {
+                break;
+            }
+        }
+    });
+
+    module.thread_handle = Some(t);
+    module.stop_tx = Some(tx);
+
+    DEVICE_ERROR_NONE
+}
+
+/// Returns `true` if timeout has passed and no message was received from `stop_rx`
+async fn timer_with_cancel(dur: Duration, stop_rx: &Receiver<()>) -> bool {
+    // TODO: use atomic bool, create another future for reading the channel and write true to the atomic bool if timeout is passed
+    let sleep_fut = async {
+        task::sleep(dur).await;
+
+        true
+    };
+    let stop_fut = async {
+        let _ = stop_rx.recv().await;
+
+        false
+    };
+
+    select!(stop_fut, sleep_fut).await
+}
+
+extern "C" fn stop(handler: *mut ::std::os::raw::c_void) -> u8 {
+    let module = unsafe { Handle(handler).as_module() };
+
+    let opt_handle = std::mem::replace(&mut module.thread_handle, None);
+    if let Some(handle) = opt_handle {
+        task::spawn(async {
+            module.stop_tx.as_ref().unwrap().close();
+        });
+
+        handle.join().unwrap();
+    }
+
+    DEVICE_ERROR_NONE
 }
 
 // --------------------------- Module-specific functions ---------------------------

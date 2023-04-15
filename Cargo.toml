@@ -10,7 +10,11 @@ libc = "0.2.132"
 lazy_static = "1"
 regex = "1"
 async-std = "1"
+async-macros = "1"
 urlencoding = "2"
+futures = "0.3"
+lipsum = "0.9"
+rand = "0.8.5"
 
 [lib]
 crate-type = ["cdylib"]
