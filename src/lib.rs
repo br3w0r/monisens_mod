@@ -19,10 +19,10 @@ use async_std::{
     task::{self},
 };
 use lazy_static::lazy_static;
-use regex::Regex;
-use urlencoding::encode;
 use lipsum::lipsum_words_with_rng;
 use rand::thread_rng;
+use regex::Regex;
+use urlencoding::encode;
 
 const CONN_PARAM_IP: &str = "IP";
 const CONN_PARAM_PORT: &str = "Port";
@@ -55,6 +55,7 @@ impl From<&ConnParamInfo> for bg::ConnParamInfo {
         Self {
             name: v.name.as_ptr() as _,
             typ: v.typ.clone(),
+            info: null::<c_void>() as _,
         }
     }
 }
@@ -565,15 +566,18 @@ extern "C" fn start(
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as i64;
-            let data = vec![bg::SensorMsgData {
-                name: sensor_data_name.as_ptr() as _,
-                typ: bg::SensorDataType::SensorDataTypeString,
-                data: sensor_data.as_ptr() as _,
-            }, bg::SensorMsgData {
-                name: sensor_timestamp_name.as_ptr() as _,
-                typ: bg::SensorDataType::SensorDataTypeTimestamp,
-                data: &sensor_timestamp as *const i64 as *mut _,
-            }];
+            let data = vec![
+                bg::SensorMsgData {
+                    name: sensor_data_name.as_ptr() as _,
+                    typ: bg::SensorDataType::SensorDataTypeString,
+                    data: sensor_data.as_ptr() as _,
+                },
+                bg::SensorMsgData {
+                    name: sensor_timestamp_name.as_ptr() as _,
+                    typ: bg::SensorDataType::SensorDataTypeTimestamp,
+                    data: &sensor_timestamp as *const i64 as *mut _,
+                },
+            ];
 
             let msg = bg::SensorMsg {
                 name: sensor_name.as_ptr() as _,
