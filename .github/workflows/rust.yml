@@ -30,19 +30,19 @@ jobs:
             OS: ubuntu-latest
             NAME: Linux x64 (lib)
             SRC: .
-            OUTPUT_FILE: monisens_mod.so
+            OUTPUT_FILE: libmonisens_mod.so
             RELEASE_FILE: monisens_mod_linux_x86_64.so
           - build: windows-lib
             OS: windows-latest
             NAME: Windows x64 (lib)
             SRC: .
-            OUTPUT_FILE: monisens_mod.dll
+            OUTPUT_FILE: libmonisens_mod.dll
             RELEASE_FILE: monisens_mod_win_x86_64.dll
           - build: macos-lib
             OS: macos-latest
             NAME: macOS x64 (lib)
             SRC: .
-            OUTPUT_FILE: monisens_mod.dylib
+            OUTPUT_FILE: libmonisens_mod.dylib
             RELEASE_FILE: monisens_mod_macos_x86_64.dylib
           # Test server
           - build: linux-server
@@ -94,7 +94,7 @@ jobs:
           - build: lib
             NAME: macOS arm64 (lib)
             SRC: .
-            OUTPUT_FILE: monisens_mod.dylib
+            OUTPUT_FILE: libmonisens_mod.dylib
             RELEASE_FILE: monisens_mod_macos_arm64.dylib
           - build: server
             NAME: macOS arm64 (server)
