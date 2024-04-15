@@ -84,7 +84,7 @@ jobs:
         token: ${{ secrets.GITHUB_TOKEN }}
 
   build_mac_arm:
-    name: Build for {{ matrix.NAME }}
+    name: Build for ${{ matrix.NAME }}
     runs-on: macos-latest
     timeout-minutes: 30
     strategy:
