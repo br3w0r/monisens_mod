@@ -73,7 +73,7 @@ jobs:
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
     - name: Build
-      run: cd {{ matrix.SRC }} && cargo build --release && mv target/release/${{ matrix.OUTPUT_FILE }} ${{ matrix.RELEASE_FILE }}
+      run: cd ${{ matrix.SRC }} && cargo build --release && mv target/release/${{ matrix.OUTPUT_FILE }} ${{ matrix.RELEASE_FILE }}
     - name: Run tests
       run: cargo test --verbose
     - name: Create release
@@ -113,7 +113,7 @@ jobs:
     - name: Add target
       run: rustup target add $MAC_ARM_TARGET
     - name: Build
-      run: cd {{ matrix.SRC }} && cargo build --target $MAC_ARM_TARGET --release && mv target/$MAC_ARM_TARGET/release/{{ $matrix.OUTPUT_FILE }} {{ $matrix.RELEASE_FILE }}
+      run: cd ${{ matrix.SRC }} && cargo build --target $MAC_ARM_TARGET --release && mv target/$MAC_ARM_TARGET/release/${{ matrix.OUTPUT_FILE }} ${{ matrix.RELEASE_FILE }}
     - name: Run tests
       run: cargo test --verbose
     - name: Create release
