@@ -80,7 +80,7 @@ jobs:
       uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
       with:
-        files: ${{ matrix.RELEASE_FILE }}
+        files: ${{ matrix.SRC }}/${{ matrix.RELEASE_FILE }}
         token: ${{ secrets.GITHUB_TOKEN }}
 
   build_mac_arm:
@@ -120,5 +120,5 @@ jobs:
       uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
       with:
-        files: monisens_mod_mac_arm64
+        files: ${{ matrix.SRC }}/${{ matrix.RELEASE_FILE }}
         token: ${{ secrets.GITHUB_TOKEN }}
