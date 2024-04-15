@@ -2,8 +2,11 @@ name: Rust
 
 on:
   push:
+    branches: [ "master" ]
     tags:
       - "v*.*.*"
+  pull_request:
+    branches: [ "master" ]
 
 concurrency:
   group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
@@ -33,7 +36,7 @@ jobs:
             OS: windows-latest
             NAME: Windows x64 (lib)
             SRC: .
-            OUTPUT_FILE: libmonisens_mod.dll
+            OUTPUT_FILE: monisens_mod.dll
             RELEASE_FILE: monisens_mod_win_x86_64.dll
           - build: macos-lib
             OS: macos-latest
