@@ -1,0 +1,124 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "master" ]
+    tags:
+      - "v*.*.*"
+  pull_request:
+    branches: [ "master" ]
+
+concurrency:
+  group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  MAC_ARM_TARGET: aarch64-apple-darwin
+
+jobs:
+  build:
+    name: Build for ${{ matrix.NAME }}
+    runs-on: ${{ matrix.OS }}
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        build: [linux-lib, windows-lib, macos-lib, linux-server, windows-server, macos-server]
+        include:
+          # Library
+          - build: linux-lib
+            OS: ubuntu-latest
+            NAME: Linux x64 (lib)
+            SRC: .
+            OUTPUT_FILE: monisens_mod.so
+            RELEASE_FILE: monisens_mod_linux_x86_64.so
+          - build: windows-lib
+            OS: windows-latest
+            NAME: Windows x64 (lib)
+            SRC: .
+            OUTPUT_FILE: monisens_mod.dll
+            RELEASE_FILE: monisens_mod_win_x86_64.dll
+          - build: macos-lib
+            OS: macos-latest
+            NAME: macOS x64 (lib)
+            SRC: .
+            OUTPUT_FILE: monisens_mod.dylib
+            RELEASE_FILE: monisens_mod_macos_x86_64.dylib
+          # Test server
+          - build: linux-server
+            OS: ubuntu-latest
+            NAME: Linux x64 (server)
+            SRC: ./test_server
+            OUTPUT_FILE: test_server
+            RELEASE_FILE: test_server_linux_x86_64
+          - build: windows-server
+            OS: windows-latest
+            NAME: Windows x64 (server)
+            SRC: ./test_server
+            OUTPUT_FILE: test_server.exe
+            RELEASE_FILE: test_server_win_x86_64.exe
+          - build: macos-server
+            OS: macos-latest
+            NAME: macOS x64 (server)
+            SRC: ./test_server
+            OUTPUT_FILE: test_server
+            RELEASE_FILE: test_server_macos_x86_64
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - name: Build
+      run: cd {{ matrix.SRC }} && cargo build --release && mv target/release/${{ matrix.OUTPUT_FILE }} ${{ matrix.RELEASE_FILE }}
+    - name: Run tests
+      run: cargo test --verbose
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: ${{ matrix.RELEASE_FILE }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+  build_mac_arm:
+    name: Build for {{ matrix.NAME }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        build: [lib, server]
+        include:
+          - build: lib
+            NAME: macOS arm64 (lib)
+            SRC: .
+            OUTPUT_FILE: monisens_mod.dylib
+            RELEASE_FILE: monisens_mod_macos_arm64.dylib
+          - build: server
+            NAME: macOS arm64 (server)
+            SRC: ./test_server
+            OUTPUT_FILE: test_server
+            RELEASE_FILE: test_server_macos_arm64
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - name: Add target
+      run: rustup target add $MAC_ARM_TARGET
+    - name: Build
+      run: cd {{ matrix.SRC }} && cargo build --target $MAC_ARM_TARGET --release && mv target/$MAC_ARM_TARGET/release/{{ $matrix.OUTPUT_FILE }} {{ $matrix.RELEASE_FILE }}
+    - name: Run tests
+      run: cargo test --verbose
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: monisens_mod_mac_arm64
+        token: ${{ secrets.GITHUB_TOKEN }}
