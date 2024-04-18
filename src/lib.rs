@@ -137,7 +137,10 @@ pub unsafe extern "C" fn init(sel: *mut *mut c_void) {
             },
         ],
         conn_conf: None,
-        device_conf: None,
+        device_conf: Some(DeviceConf {
+            comm_interval: 1,
+            msg: MessageType::Timestamp,
+        }),
         thread_handle: None,
         stop_tx: None,
     };
